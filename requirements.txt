@@ -9,3 +9,4 @@ gunicorn==21.2.0
 streamlit
 SQLAlchemy==2.0.36
 pandas
+sshtunnel
