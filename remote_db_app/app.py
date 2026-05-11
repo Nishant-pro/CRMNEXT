@@ -1,10 +1,11 @@
-# app.py - Streamlit web version (mirrors local Tkinter app behaviour)
+# app.py - Streamlit web version with SSH tunnelling for database connections
 import streamlit as st
 import threading
 import subprocess
 import io
 import os
 import time
+import socket
 import paramiko
 from datetime import datetime
 from urllib.parse import quote_plus
@@ -23,9 +24,11 @@ def init_session():
     if 'db1_connected' not in st.session_state:
         st.session_state.db1_connected = False
         st.session_state.engine = None
+        st.session_state.db1_tunnel = None
     if 'db2_connected' not in st.session_state:
         st.session_state.db2_connected = False
         st.session_state.engine2 = None
+        st.session_state.db2_tunnel = None
     if 'ssh_connected' not in st.session_state:
         st.session_state.ssh_connected = False
         st.session_state.ssh_client = None
@@ -44,23 +47,70 @@ init_session()
 
 st.title("🔧 Remote DB Client - Oracle Automation")
 
+# ---------- Helper: find a free local port ----------
+def get_free_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('', 0))
+        return s.getsockname()[1]
+
+# ---------- Helper: create an SSH tunnel ----------
+def open_ssh_tunnel(ssh_client, remote_host, remote_port):
+    """Open an SSH forward tunnel to remote_host:remote_port, return local port."""
+    local_port = get_free_port()
+    transport = ssh_client.get_transport()
+    # The tunnel will listen on 127.0.0.1:local_port and forward to remote_host:remote_port
+    transport.request_port_forward('127.0.0.1', local_port, remote_host, remote_port)
+    return local_port
+
+def close_ssh_tunnel(ssh_client, local_port):
+    try:
+        ssh_client.get_transport().cancel_port_forward('127.0.0.1', local_port)
+    except Exception:
+        pass
+
 # Sidebar – Connections
 with st.sidebar:
     st.header("🔌 Connections")
 
-    # Database 1
+    # ----- Database 1 -----
     st.subheader("Database 1 (Source)")
     host1_val = st.text_input("Host", value="localhost", key="host1")
     port1_val = st.text_input("Port", value="1521", key="port1")
     service1_val = st.text_input("Service Name", key="service1")
     user1_val = st.text_input("User", key="user1")
     pass1_val = st.text_input("Password", type="password", key="pass1")
+    use_tunnel1 = st.checkbox("Use SSH tunnel for DB1", value=True, key="tunnel1")
 
     col1, col2 = st.columns(2)
     with col1:
         if st.button("Connect DB1", use_container_width=True):
             try:
-                conn_str = f"oracle+oracledb://{user1_val}:{quote_plus(pass1_val)}@{host1_val}:{port1_val}/?service_name={service1_val}"
+                # Clean up any previous connection
+                if st.session_state.engine:
+                    st.session_state.engine.dispose()
+                if st.session_state.db1_tunnel:
+                    close_ssh_tunnel(st.session_state.ssh_client, st.session_state.db1_tunnel)
+                st.session_state.engine = None
+                st.session_state.db1_connected = False
+
+                local_host = host1_val
+                local_port = int(port1_val)
+
+                # If tunnel requested and SSH is active, create forward
+                if use_tunnel1 and st.session_state.ssh_connected and st.session_state.ssh_client:
+                    try:
+                        tunnel_port = open_ssh_tunnel(st.session_state.ssh_client, host1_val, int(port1_val))
+                        st.session_state.db1_tunnel = tunnel_port
+                        local_host = '127.0.0.1'
+                        local_port = tunnel_port
+                        st.info(f"DB1 tunnel opened on localhost:{tunnel_port}")
+                    except Exception as e:
+                        st.error(f"SSH tunnel failed: {e}")
+                        st.session_state.db1_connected = False
+                        st.session_state.engine = None
+                        st.stop()
+
+                conn_str = f"oracle+oracledb://{user1_val}:{quote_plus(pass1_val)}@{local_host}:{local_port}/?service_name={service1_val}"
                 eng = create_engine(conn_str)
                 with eng.connect() as conn:
                     conn.execute(text("SELECT 1 FROM DUAL"))
@@ -70,6 +120,10 @@ with st.sidebar:
             except Exception as e:
                 st.session_state.db1_connected = False
                 st.session_state.engine = None
+                # Close tunnel if opened
+                if 'tunnel_port' in locals() and st.session_state.db1_tunnel:
+                    close_ssh_tunnel(st.session_state.ssh_client, st.session_state.db1_tunnel)
+                    st.session_state.db1_tunnel = None
                 st.error(f"Connection failed: {e}")
 
     with col2:
@@ -78,24 +132,51 @@ with st.sidebar:
                 st.session_state.engine.dispose()
             st.session_state.engine = None
             st.session_state.db1_connected = False
+            if st.session_state.db1_tunnel:
+                close_ssh_tunnel(st.session_state.ssh_client, st.session_state.db1_tunnel)
+                st.session_state.db1_tunnel = None
 
     st.markdown("✅ **DB1:** " + ("Connected" if st.session_state.db1_connected else "Not Connected"))
 
     st.divider()
 
-    # Database 2
+    # ----- Database 2 -----
     st.subheader("Database 2 (Target)")
     host2_val = st.text_input("Host", key="host2")
     port2_val = st.text_input("Port", value="1521", key="port2")
     service2_val = st.text_input("Service Name", key="service2")
     user2_val = st.text_input("User", key="user2")
     pass2_val = st.text_input("Password", type="password", key="pass2")
+    use_tunnel2 = st.checkbox("Use SSH tunnel for DB2", value=True, key="tunnel2")
 
     col1, col2 = st.columns(2)
     with col1:
         if st.button("Connect DB2", use_container_width=True):
             try:
-                conn_str = f"oracle+oracledb://{user2_val}:{quote_plus(pass2_val)}@{host2_val}:{port2_val}/?service_name={service2_val}"
+                if st.session_state.engine2:
+                    st.session_state.engine2.dispose()
+                if st.session_state.db2_tunnel:
+                    close_ssh_tunnel(st.session_state.ssh_client, st.session_state.db2_tunnel)
+                st.session_state.engine2 = None
+                st.session_state.db2_connected = False
+
+                local_host = host2_val
+                local_port = int(port2_val)
+
+                if use_tunnel2 and st.session_state.ssh_connected and st.session_state.ssh_client:
+                    try:
+                        tunnel_port = open_ssh_tunnel(st.session_state.ssh_client, host2_val, int(port2_val))
+                        st.session_state.db2_tunnel = tunnel_port
+                        local_host = '127.0.0.1'
+                        local_port = tunnel_port
+                        st.info(f"DB2 tunnel opened on localhost:{tunnel_port}")
+                    except Exception as e:
+                        st.error(f"SSH tunnel failed: {e}")
+                        st.session_state.db2_connected = False
+                        st.session_state.engine2 = None
+                        st.stop()
+
+                conn_str = f"oracle+oracledb://{user2_val}:{quote_plus(pass2_val)}@{local_host}:{local_port}/?service_name={service2_val}"
                 eng = create_engine(conn_str)
                 with eng.connect() as conn:
                     conn.execute(text("SELECT 1 FROM DUAL"))
@@ -105,6 +186,9 @@ with st.sidebar:
             except Exception as e:
                 st.session_state.db2_connected = False
                 st.session_state.engine2 = None
+                if 'tunnel_port' in locals() and st.session_state.db2_tunnel:
+                    close_ssh_tunnel(st.session_state.ssh_client, st.session_state.db2_tunnel)
+                    st.session_state.db2_tunnel = None
                 st.error(f"Connection failed: {e}")
 
     with col2:
@@ -113,12 +197,15 @@ with st.sidebar:
                 st.session_state.engine2.dispose()
             st.session_state.engine2 = None
             st.session_state.db2_connected = False
+            if st.session_state.db2_tunnel:
+                close_ssh_tunnel(st.session_state.ssh_client, st.session_state.db2_tunnel)
+                st.session_state.db2_tunnel = None
 
     st.markdown("✅ **DB2:** " + ("Connected" if st.session_state.db2_connected else "Not Connected"))
 
     st.divider()
 
-    # SSH
+    # ----- SSH Connection -----
     st.subheader("SSH Connection")
     ssh_host_val = st.text_input("SSH Host", value="192.168.1.100", key="ssh_host")
     ssh_port_val = st.text_input("SSH Port", value="22", key="ssh_port")
@@ -129,6 +216,9 @@ with st.sidebar:
     with col1:
         if st.button("Connect SSH", use_container_width=True):
             try:
+                # If already connected, close old
+                if st.session_state.ssh_client:
+                    st.session_state.ssh_client.close()
                 client = paramiko.SSHClient()
                 client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
                 client.connect(ssh_host_val, port=int(ssh_port_val), username=ssh_user_val, password=ssh_pass_val)
@@ -142,10 +232,22 @@ with st.sidebar:
 
     with col2:
         if st.button("Disconnect SSH", use_container_width=True):
+            # Close any open tunnels first
+            if st.session_state.db1_tunnel:
+                close_ssh_tunnel(st.session_state.ssh_client, st.session_state.db1_tunnel)
+                st.session_state.db1_tunnel = None
+            if st.session_state.db2_tunnel:
+                close_ssh_tunnel(st.session_state.ssh_client, st.session_state.db2_tunnel)
+                st.session_state.db2_tunnel = None
             if st.session_state.ssh_client:
                 st.session_state.ssh_client.close()
             st.session_state.ssh_client = None
             st.session_state.ssh_connected = False
+            # Disconnect DBs because their tunnels are gone
+            st.session_state.engine = None
+            st.session_state.engine2 = None
+            st.session_state.db1_connected = False
+            st.session_state.db2_connected = False
 
     st.markdown("✅ **SSH:** " + ("Connected" if st.session_state.ssh_connected else "Not Connected"))
 
@@ -155,7 +257,6 @@ tab1, tab2, tab3 = st.tabs(["📦 DataPump", "📁 File Transfer", "📊 Compare
 # ---------------------- DataPump Tab (real-time streaming) ----------------------
 with tab1:
     st.header("DataPump Export/Import")
-
     col_left, col_right = st.columns([1, 1])
 
     with col_left:
@@ -185,9 +286,8 @@ with tab1:
                 if not target_engine:
                     st.error(f"Connect to {'DB1' if mode == 'Export' else 'DB2'} first!")
                 else:
-                    st.session_state.dp_output = []   # clear previous
+                    st.session_state.dp_output = []
                     st.session_state.dp_stop = False
-                    # Build command
                     cmd_parts = [
                         "expdp" if mode == "Export" else "impdp",
                         f"{user1_val if mode == 'Export' else user2_val}/<password>"
@@ -214,7 +314,6 @@ with tab1:
                     st.session_state.dp_output.append(f"$ {full_cmd}\n")
 
                     if st.session_state.ssh_connected and st.session_state.ssh_client:
-                        # Remote execution via SSH
                         service = service1_val if mode == "Export" else service2_val
                         env_cmd = f"export ORACLE_SID={service}; export ORAENV_ASK=NO; . /usr/local/bin/oraenv; {full_cmd}"
 
@@ -222,13 +321,11 @@ with tab1:
                             client = st.session_state.ssh_client
                             try:
                                 stdin, stdout, stderr = client.exec_command(env_cmd, get_pty=True)
-                                # Read stdout line by line in a non-blocking way
                                 for line in iter(stdout.readline, ""):
                                     if st.session_state.dp_stop:
-                                        stdin.write("\x03")   # send Ctrl+C
+                                        stdin.write("\x03")
                                         break
                                     st.session_state.dp_output.append(line.rstrip())
-                                # Check for errors
                                 for line in iter(stderr.readline, ""):
                                     st.session_state.dp_output.append(f"[STDERR] {line.rstrip()}")
                                 st.session_state.dp_output.append("✅ DataPump finished.")
@@ -248,17 +345,15 @@ with tab1:
 
     with col_right:
         st.subheader("Output")
-        # Real-time display of output
         output_placeholder = st.empty()
         if st.session_state.dp_output:
             output_placeholder.code("\n".join(st.session_state.dp_output), language="bash")
         if st.button("Clear Output"):
             st.session_state.dp_output = []
 
-# ---------------------- File Transfer Tab (like local app) ----------------------
+# ---------------------- File Transfer Tab ----------------------
 with tab2:
     st.header("File Transfer")
-
     col1, col2 = st.columns(2)
 
     with col1:
@@ -304,7 +399,6 @@ with tab2:
                 st.error("Connect to DB2 first!")
 
     if st.button("🚀 Transfer Files", type="primary", use_container_width=True):
-        # use session state values directly
         source_dir = st.session_state.get("source_path", "")
         dest_dir = st.session_state.get("dest_path", "")
         dumpfile = st.session_state.get("dp_dumpfile", "")
@@ -353,7 +447,7 @@ with tab2:
     for log in st.session_state.transfer_logs:
         st.text(log)
 
-# ---------------------- Compare Objects Tab (with Missing column) ----------------------
+# ---------------------- Compare Objects Tab ----------------------
 with tab3:
     st.header("Object Comparison")
     if st.button("Compare Objects", type="primary"):
