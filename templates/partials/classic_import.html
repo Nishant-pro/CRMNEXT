@@ -1,0 +1,12 @@
+﻿<h4>Classic Import</h4>
+<form id="classic-import-form">
+    <div class="mb-3"><label>Server</label><select class="form-select" name="server_id" required>
+        {% for s in servers %}<option value="{{ s.id }}">{{ s.name }} ({{ s.host }})</option>{% endfor %}
+    </select></div>
+    <div class="mb-3"><label>Target Schema</label><input class="form-control" name="schema" required></div>
+    <div class="mb-3"><label>Dump File</label><input class="form-control" name="file" required></div>
+    <div class="mb-3"><label>From User (optional)</label><input class="form-control" name="fromuser"></div>
+    <div class="mb-3"><label>To User (optional)</label><input class="form-control" name="touser"></div>
+    <button type="submit" class="btn btn-primary">Start Classic Import</button>
+</form>
+<pre id="classic-import-log" class="mt-3 border p-2" style="max-height:300px;overflow:auto;"></pre>

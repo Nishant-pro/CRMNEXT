@@ -1,0 +1,14 @@
+﻿Flask==3.0.0
+celery[redis]==5.3.6
+redis==5.0.1
+paramiko==3.4.0
+oracledb==2.4.0
+SQLAlchemy==2.0.23
+Flask-SQLAlchemy==3.1.1
+python-dotenv==1.0.0
+gunicorn==21.2.0
+streamlit
+paramiko
+sqlalchemy
+oracledb
+pandas

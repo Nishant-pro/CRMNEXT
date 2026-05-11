@@ -1,0 +1,11 @@
+﻿<h4>Tablespace Monitor</h4>
+<form id="tablespace-form">
+    <div class="mb-3"><label>Server</label><select class="form-select" name="server_id" required>
+        {% for s in servers %}<option value="{{ s.id }}">{{ s.name }} ({{ s.host }})</option>{% endfor %}
+    </select></div>
+    <button type="submit" class="btn btn-info">Fetch Tablespace Info</button>
+</form>
+<table class="table table-striped mt-3 d-none" id="tablespace-table">
+    <thead><tr><th>Name</th><th>Total MB</th><th>Used MB</th><th>Free MB</th><th>Used %</th></tr></thead>
+    <tbody></tbody>
+</table>

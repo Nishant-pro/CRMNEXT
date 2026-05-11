@@ -1,0 +1,10 @@
+﻿<h4>Classic Export</h4>
+<form id="classic-export-form">
+    <div class="mb-3"><label>Server</label><select class="form-select" name="server_id" required>
+        {% for s in servers %}<option value="{{ s.id }}">{{ s.name }} ({{ s.host }})</option>{% endfor %}
+    </select></div>
+    <div class="mb-3"><label>Schema</label><input class="form-control" name="schema" required></div>
+    <div class="mb-3"><label>Export File</label><input class="form-control" name="file" required></div>
+    <button type="submit" class="btn btn-primary">Start Classic Export</button>
+</form>
+<pre id="classic-export-log" class="mt-3 border p-2" style="max-height:300px;overflow:auto;"></pre>
